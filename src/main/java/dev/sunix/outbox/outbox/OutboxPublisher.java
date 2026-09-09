@@ -18,6 +18,9 @@ public class OutboxPublisher {
     public OutboxPublisher(OutboxStore outbox, EventSender sender, Clock clock,
             @Value("${app.outbox.batch-size:50}") int batchSize,
             @Value("${app.outbox.max-attempts:8}") int maxAttempts) {
+        if (batchSize < 1 || batchSize > 1000 || maxAttempts < 1) {
+            throw new IllegalArgumentException("batch size must be 1–1000 and max attempts must be positive");
+        }
         this.outbox = outbox;
         this.sender = sender;
         this.clock = clock;
@@ -34,10 +37,15 @@ public class OutboxPublisher {
         for (OutboxEvent event : events) {
             try {
                 sender.send(event);
-                outbox.markPublished(event.id(), clock.instant());
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("outbox publication interrupted", exception);
             } catch (Exception exception) {
                 deferOrStop(event, exception);
+                continue;
             }
+            // A storage failure must roll back the batch, not be classified as a send failure.
+            outbox.markPublished(event.id(), clock.instant());
         }
         return events.size();
     }
@@ -49,7 +57,7 @@ public class OutboxPublisher {
             outbox.markDead(event.id(), attempts, error);
             return;
         }
-        long delaySeconds = Math.min(300, 1L << Math.min(attempts - 1, 8));
+        long delaySeconds = Math.min(300, 1L << Math.min(attempts - 1, 9));
         outbox.scheduleRetry(event.id(), attempts, clock.instant().plus(Duration.ofSeconds(delaySeconds)), error);
     }
 

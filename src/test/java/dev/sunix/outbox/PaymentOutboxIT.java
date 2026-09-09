@@ -1,6 +1,7 @@
 package dev.sunix.outbox;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -152,6 +153,34 @@ class PaymentOutboxIT {
         assertThat(projection.apply(event)).isTrue();
         assertThat(projection.apply(event)).isFalse();
         assertThat(jdbc.queryForObject("select applied_count from payment_projection", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void malformedEventDoesNotConsumeItsDeduplicationKey() {
+        String payload = """
+                {"eventId":"%s","paymentId":"%s","accountId":"%s",
+                 "amount":"9.999","currency":"USD","occurredAt":"2026-01-15T12:00:00Z"}
+                """.formatted(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        assertThatThrownBy(() -> projection.apply(objectMapper.readTree(payload)))
+                .isInstanceOf(ArithmeticException.class);
+        assertThat(jdbc.queryForObject("select count(*) from processed_event", Integer.class)).isZero();
+        assertThat(projection.apply(objectMapper.readTree(payload.replace("9.999", "9.99")))).isTrue();
+    }
+
+    @Test
+    void newEventIdCannotOverwriteAnAcceptedPayment() {
+        UUID eventId = UUID.randomUUID();
+        String payload = """
+                {"eventId":"%s","paymentId":"%s","accountId":"%s",
+                 "amount":"9.99","currency":"USD","occurredAt":"2026-01-15T12:00:00Z"}
+                """.formatted(eventId, UUID.randomUUID(), UUID.randomUUID());
+        projection.apply(objectMapper.readTree(payload));
+        String conflict = payload.replace(eventId.toString(), UUID.randomUUID().toString()).replace("9.99", "8.00");
+        assertThatThrownBy(() -> projection.apply(objectMapper.readTree(conflict)))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject("select count(*) from processed_event", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select amount from payment_projection", BigDecimal.class))
+                .isEqualByComparingTo("9.99");
     }
 
     private static void await(Duration timeout, java.util.function.BooleanSupplier condition)

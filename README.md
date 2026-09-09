@@ -4,7 +4,7 @@ This service accepts a payment command, stores the payment and its integration e
 
 It focuses on the failure window that matters in this pattern. A process can stop after Kafka acknowledges an event but before PostgreSQL records it as published. The row will be retried and Kafka may receive the event again, so the included consumer records processed event IDs in the same transaction as its projection update.
 
-The project is an independent implementation built with synthetic data. It does not contain employer code or proprietary payment rules.
+An independent project with synthetic payment commands; no employer code or customer data.
 
 ## Write path
 
@@ -33,7 +33,9 @@ The same idempotency key and request returns the original payment. Reusing the k
 
 Publishers claim ordered batches with `FOR UPDATE SKIP LOCKED`, allowing several instances to work without selecting the same row. A failed send increments the attempt count and schedules exponential backoff from 1 second to 5 minutes. After eight attempts the row moves to `DEAD` for operator review.
 
-Kafka producer idempotence reduces duplicates produced by retries inside the client, but it cannot close the database/Kafka commit gap. The application therefore describes its contract as at-least-once. The sample consumer's `processed_event` primary key makes repeated delivery a no-op. Malformed consumer records are retried three times and then published to `payment-events.DLT`.
+Kafka producer idempotence reduces client retry duplicates but cannot close the database/Kafka commit gap. Delivery is at-least-once. The consumer records processed event IDs with its projection update, making repeated delivery a no-op. A different event claiming the same payment is rejected rather than overwriting its amount.
+
+Malformed consumer records are retried three times and then published to `payment-events.DLT`. If that publication fails, recovery also fails and the source record remains eligible for retry. Publisher interruption rolls back the batch and stops sending; database failures are propagated rather than counted as Kafka failures.
 
 ## Run locally
 

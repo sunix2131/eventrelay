@@ -33,6 +33,7 @@ public class ApplicationConfiguration {
     DefaultErrorHandler kafkaErrorHandler(KafkaTemplate<String, String> kafka) {
         var recoverer = new DeadLetterPublishingRecoverer(
                 kafka, (record, exception) -> new TopicPartition(record.topic() + ".DLT", record.partition()));
+        recoverer.setFailIfSendResultIsError(true);
         return new DefaultErrorHandler(recoverer, new FixedBackOff(250, 3));
     }
 }
